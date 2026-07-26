@@ -1,0 +1,196 @@
+Metadata-Version: 2.4
+Name: ease
+Version: 0.1.0
+Summary: Energy-Aware Software Engineering Platform — Analyze, Optimize, Validate, and Benchmark software energy efficiency.
+Author: EASE Team
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.110.0
+Requires-Dist: uvicorn[standard]>=0.27.0
+Requires-Dist: pydantic>=2.5.0
+Requires-Dist: pydantic-settings>=2.1.0
+Requires-Dist: sqlalchemy>=2.0.25
+Requires-Dist: alembic>=1.13.0
+Requires-Dist: aiosqlite>=0.19.0
+Requires-Dist: streamlit>=1.31.0
+Requires-Dist: codecarbon>=2.3.0
+Requires-Dist: ruff>=0.2.0
+Requires-Dist: pylint>=3.0.0
+Requires-Dist: radon>=5.1.0
+Requires-Dist: black>=24.0.0
+Requires-Dist: autopep8>=2.0.0
+Requires-Dist: isort>=5.13.0
+Requires-Dist: rope>=1.12.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: httpx>=0.26.0
+Requires-Dist: importlib-metadata>=6.0; python_version < "3.12"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: hypothesis>=6.90.0; extra == "dev"
+Requires-Dist: mypy>=1.8.0; extra == "dev"
+Requires-Dist: factory-boy>=3.3.0; extra == "dev"
+Requires-Dist: pre-commit>=3.5.0; extra == "dev"
+Provides-Extra: test
+Requires-Dist: pytest>=8.0.0; extra == "test"
+Requires-Dist: pytest-asyncio>=0.23.0; extra == "test"
+Requires-Dist: hypothesis>=6.90.0; extra == "test"
+
+# ⚡ EASE — Energy-Aware Software Engineering Platform
+
+**Analyze, optimize, validate, and benchmark software energy efficiency.**
+
+EASE is a modular, extensible platform for analyzing source code quality, automatically applying optimizations, validating correctness, and benchmarking energy consumption differences — all in isolated, reproducible workspaces.
+
+## Architecture
+
+```
+                        ┌─────────────────────┐
+                        │     Dashboard        │
+                        │  (Streamlit → React) │
+                        └──────────┬──────────┘
+                                   │ REST/HTTP (JSON)
+                        ┌──────────▼──────────┐
+                        │    API Gateway       │
+                        │     (FastAPI)        │
+                        └──────────┬──────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              │                    │                    │
+   ┌──────────▼────────┐ ┌────────▼────────┐ ┌────────▼────────┐
+   │ Experiment Manager │ │ Orchestrator    │ │ Plugin Registry │
+   │ (CRUD + Query)     │ │ (DAG executor)  │ │ (discovery)     │
+   └──────────┬────────┘ └────────┬────────┘ └────────┬────────┘
+              │                   │                   │
+              │          ┌────────▼──────────┐        │
+              │          │  Stage Executors   │◄───────┘
+              │          │  (isolated)        │
+              │          └────────┬──────────┘
+              │                   │
+   ┌──────────▼───────────────────▼──────────────────────────────┐
+   │                Plugins (via Protocols)                        │
+   │  Analyzer | Optimizer | Validator | Runner | Monitor | LLM   │
+   └─────────────────────────────────────────────────────────────┘
+```
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.11+
+- pip (or uv for faster installs)
+
+### Installation
+
+```bash
+# Clone and install
+git clone <repo-url> ease && cd ease
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Initialize the database
+alembic upgrade head
+
+# Start the API (Terminal 1)
+uvicorn ease_api.main:app --reload --port 8000
+
+# Start the dashboard (Terminal 2)
+streamlit run ease_dashboard/app.py
+
+# Or use the CLI
+curl -X POST localhost:8000/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name": "demo", "root_path": "/path/to/project"}'
+```
+
+### Registering a project
+
+```bash
+curl -X POST localhost:8000/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-project", "root_path": "/path/to/code"}'
+```
+
+### Running an experiment
+
+```bash
+curl -X POST localhost:8000/projects/{project_id}/experiments \
+  -H "Content-Type: application/json" \
+  -d '{"config_overrides": {"stages": [{"name": "analyze", "category": "analyzers", "plugin": "ruff"}]}}'
+```
+
+## Project Structure
+
+```
+ease/
+├── pyproject.toml                    # Project config & entry-points
+├── alembic.ini                       # DB migration config
+├── docker-compose.dev.yml            # Dev services (Postgres, Redis)
+├── ease_core/                        # Core framework
+│   ├── orchestrator/                 # DAG resolution & execution
+│   ├── plugins/
+│   │   ├── base.py                   # Protocol definitions
+│   │   └── registry.py               # Entry-points discovery
+│   ├── models/                       # Pydantic + SQLAlchemy models
+│   ├── workspace/                    # Copy-on-write isolation
+│   ├── storage/                      # DB manager + BlobStore
+│   └── config/                       # pydantic-settings
+├── ease_plugins/                     # Concrete plugin implementations
+│   ├── analyzers/  (ruff, pylint, radon)
+│   ├── optimizers/ (black, autopep8, isort, rope)
+│   ├── validators/ (syntax, pytest, static_rerun)
+│   ├── runners/    (local_process)
+│   ├── monitors/   (codecarbon)
+│   ├── reporters/  (json, markdown)
+│   └── llm/        (null — placeholder)
+├── ease_api/                         # FastAPI application
+│   ├── main.py
+│   ├── routers/    (projects, experiments, plugins)
+│   └── deps.py
+├── ease_dashboard/                   # Streamlit frontend
+├── migrations/                       # Alembic migrations
+├── tests/
+│   ├── unit/       # Component-level tests
+│   ├── contract/   # Shared plugin contract tests
+│   └── e2e/        # Full pipeline tests
+└── examples/
+    └── pipeline.yaml                 # Example pipeline config
+```
+
+## Plugin System
+
+Plugins are discovered via Python packaging entry-points. Each category defines a Protocol:
+
+| Category    | Protocol       | Input → Output                          |
+|-------------|----------------|-----------------------------------------|
+| Analyzer    | `Stage`        | → `NormalizedSmellReport`               |
+| Optimizer   | `Stage`        | `NormalizedSmellReport` → `OptimizedCode` |
+| Validator   | `Stage`        | → `ValidationResult`                    |
+| Runner      | `Stage`        | → `RunMetrics`                          |
+| Monitor     | `Stage`        | → `EnergyMetrics`                       |
+| LLM         | `Stage`        | `NormalizedSmellReport` → `List[OptimizedCode]` |
+| Reporter    | `Stage`        | → arbitrary artifact                    |
+
+Third-party plugins can be installed as pip packages and register themselves via `entry-points` in their own `pyproject.toml`.
+
+## Development
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Type check
+mypy ease_core ease_plugins ease_api
+
+# Lint
+ruff check ease_core ease_plugins ease_api
+```
+
+## License
+
+MIT

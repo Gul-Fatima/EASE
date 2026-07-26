@@ -1,0 +1,90 @@
+# EASE Pipeline Configuration
+# This example defines a complete analysis → optimization → validation →
+# benchmark pipeline for a Python project.
+
+name: "example-pipeline"
+description: "Analyze, optimize (3 strategies), validate, benchmark, and report."
+
+default_timeout_seconds: 300
+max_concurrency: 2
+
+stages:
+
+  # ── 1. Analysis ────────────────────────────────────────────────────────
+  - name: "analyze-ruff"
+    category: "analyzers"
+    plugin: "ruff"
+    config:
+      target: "./"
+
+  - name: "analyze-pylint"
+    category: "analyzers"
+    plugin: "pylint"
+    depends_on: []  # runs in parallel with ruff
+
+  - name: "analyze-radon"
+    category: "analyzers"
+    plugin: "radon"
+    depends_on: []  # runs in parallel with ruff and pylint
+
+  # ── 2. Optimization (multiple strategies) ──────────────────────────────
+  - name: "optimize-black"
+    category: "optimizers"
+    plugin: "black"
+    depends_on: ["analyze-ruff"]  # depends on analysis (for reporting)
+
+  - name: "optimize-autopep8"
+    category: "optimizers"
+    plugin: "autopep8"
+    depends_on: ["analyze-ruff"]
+
+  - name: "optimize-isort"
+    category: "optimizers"
+    plugin: "isort"
+    depends_on: ["analyze-ruff"]
+
+  # ── 3. Validation ──────────────────────────────────────────────────────
+  - name: "validate-syntax"
+    category: "validators"
+    plugin: "syntax"
+    depends_on: ["optimize-black", "optimize-autopep8", "optimize-isort"]
+
+  - name: "validate-pytest"
+    category: "validators"
+    plugin: "pytest_validator"
+    depends_on: ["validate-syntax"]
+    config:
+      timeout_seconds: 120
+
+  # ── 4. Benchmark ───────────────────────────────────────────────────────
+  - name: "benchmark-original"
+    category: "runners"
+    plugin: "local_process"
+    config:
+      entrypoint: "main.py"
+      runs: 3
+
+  - name: "benchmark-optimized"
+    category: "runners"
+    plugin: "local_process"
+    depends_on: ["validate-pytest"]
+    config:
+      entrypoint: "main.py"
+      runs: 3
+
+  # ── 5. Energy Monitoring ──────────────────────────────────────────────
+  - name: "monitor-energy"
+    category: "monitors"
+    plugin: "codecarbon"
+    depends_on: ["benchmark-optimized"]
+
+  # ── 6. Reporting ──────────────────────────────────────────────────────
+  - name: "report-json"
+    category: "reporters"
+    plugin: "json"
+    depends_on: ["monitor-energy", "benchmark-original"]
+
+  - name: "report-markdown"
+    category: "reporters"
+    plugin: "markdown"
+    depends_on: ["monitor-energy", "benchmark-original"]

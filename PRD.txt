@@ -1,0 +1,503 @@
+================================================================================
+EASE — Energy-Aware Software Engineering Platform
+TECHNICAL DESIGN & ARCHITECTURE PROPOSAL
+Prepared as a companion to PRD v0.1 (MVP)
+================================================================================
+
+--------------------------------------------------------------------------------
+0. PURPOSE OF THIS DOCUMENT
+--------------------------------------------------------------------------------
+The PRD defines WHAT EASE should do. This document defines HOW it should be
+built: system architecture, module contracts, data model, orchestration
+mechanics, tech stack, repo layout, and setup instructions, so an engineering
+team can start implementation without further design ambiguity.
+
+Design principles driving every decision below:
+
+  1. The pipeline is a DAG of typed stages, not a script. Each stage consumes
+     and produces a well-defined artifact. This is what actually delivers the
+     PRD's "plugin architecture" and "reproducibility" requirements — not the
+     YAML file alone.
+  2. Plugins are contracts, not conventions. Every plugin category (Analyzer,
+     Optimizer, Monitor, Runner, Validator, LLM, Reporter) is a Python
+     Protocol/ABC with a versioned schema for inputs/outputs. This is required
+     so Module 3's future LLM providers and Module 6's future energy backends
+     can be swapped without touching orchestration code.
+  3. Isolation is structural, not procedural. "Never modify the original
+     project" (NFR, Reliability) is enforced by copy-on-write workspaces plus
+     execution inside ephemeral containers — not by convention/discipline in
+     the optimizer code.
+  4. Experiments are the unit of truth. Everything the dashboard shows is a
+     read-model computed from immutable Experiment records — the system never
+     computes "current state" live from source.
+  5. MVP stack must not paint the team into a corner for Phase 2–4 (Docker
+     runners, REST API, multi-language, LLM candidates, SaaS). Every "future"
+     item in the PRD is designed for now, even if not built now.
+
+--------------------------------------------------------------------------------
+1. HIGH-LEVEL ARCHITECTURE
+--------------------------------------------------------------------------------
+
+                        ┌─────────────────────────┐
+                        │        Dashboard         │
+                        │  (Streamlit → React)     │
+                        └────────────┬─────────────┘
+                                     │ REST/HTTP (JSON)
+                        ┌────────────▼─────────────┐
+                        │        API Gateway        │
+                        │        (FastAPI)          │
+                        └────────────┬─────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                       │
+   ┌──────────▼─────────┐ ┌──────────▼─────────┐  ┌──────────▼─────────┐
+   │  Experiment Manager │ │  Pipeline Orchestrator│ │   Plugin Registry   │
+   │  (CRUD + Query)      │ │  (DAG executor)       │ │  (discovery/loader)  │
+   └──────────┬─────────┘ └──────────┬─────────┘  └──────────┬─────────┘
+              │                      │                       │
+              │           ┌──────────▼───────────┐           │
+              │           │   Stage Executors      │◄─────────┘
+              │           │  (run in-process OR    │
+              │           │   in ephemeral         │
+              │           │   container/venv)      │
+              │           └──────────┬───────────┘
+              │                      │
+   ┌──────────▼──────────────────────▼──────────────────────────────┐
+   │                         Plugins (via Protocols)                  │
+   │  Analyzer | Optimizer | Validator | Runner | Monitor | LLM | Reporter │
+   │  ruff/pylint/radon | black/autopep8/isort/rope | pytest | ...    │
+   └────────────────────────────────────────────────────────────────┘
+              │
+   ┌──────────▼─────────┐        ┌────────────────────┐
+   │   Storage Layer      │        │  Workspace Manager   │
+   │  SQLite → Postgres   │        │  (copy-on-write dirs, │
+   │  + artifact blob dir │        │   git snapshots)      │
+   └──────────────────────┘        └────────────────────┘
+
+Key structural decision: the Dashboard NEVER talks to plugins or the
+filesystem directly. It only talks to the API Gateway, which is backed by the
+Experiment Manager (reads) and Pipeline Orchestrator (writes/triggers). This
+is what lets Module 9 (Dashboard) be swapped from Streamlit to React in
+Phase 2 with zero backend changes — a requirement implied by the PRD's stated
+migration path but not stated explicitly as a constraint. Making it explicit
+here avoids the common failure mode where Streamlit ends up directly importing
+pipeline internals and becomes unmigratable.
+
+--------------------------------------------------------------------------------
+2. THE PIPELINE AS A TYPED DAG (core architectural decision)
+--------------------------------------------------------------------------------
+The PRD's "Core Workflow" (Section 6) and "Experiment Lifecycle" (Section 10)
+describe a linear sequence. Implement it as a DAG, not a linear script, for
+two concrete reasons the PRD itself implies but doesn't state:
+
+  - Section 8 "Comparison View" wants Original vs Optimization A vs
+    Optimization B vs LLM Candidate — i.e., BRANCHING pipelines from one
+    analysis result. A linear script can't represent this; a DAG can, with
+    Optimize→Validate→Benchmark→Monitor repeated per branch and Compare
+    fanning-in over all branches.
+  - Section 12 "Future LLM Architecture" wants N candidates evaluated in
+    parallel. That's also a fan-out/fan-in shape.
+
+Stage contract (every plugin implements this, regardless of category):
+
+    class Stage(Protocol):
+        name: str
+        version: str
+        input_schema: Type[BaseModel]
+        output_schema: Type[BaseModel]
+
+        def run(self, ctx: ExecutionContext, input: BaseModel) -> BaseModel: ...
+        def healthcheck(self) -> bool: ...
+
+  - input_schema/output_schema are Pydantic models. This gives you the
+    "Normalize Results" step (Module 2) for free: every Analyzer plugin must
+    emit the same NormalizedSmellReport schema regardless of whether it
+    wraps Ruff, Pylint, or (later) SonarQube. Normalization is enforced by
+    the type system, not by a hand-written adapter step.
+  - ExecutionContext carries: workspace path, experiment_id, run config,
+    a structured logger, and a resource-limit handle (timeout, cpu/mem caps).
+  - version is persisted into the Experiment record so "tool versions are
+    stored" (NFR: Reproducibility) is automatic, not a manual bookkeeping task.
+
+Orchestrator responsibilities:
+  - Resolve the DAG for a given pipeline.yaml (topological execution).
+  - Run independent branches concurrently (asyncio for I/O-bound stages;
+    subprocess/worker pool for CPU-bound tools like Radon/CodeCarbon).
+  - On any stage failure: mark experiment FAILED at that stage, preserve all
+    prior stage outputs, and NEVER touch the original project directory
+    (see Section 4, Workspace Isolation).
+  - Emit a stage-transition event after every stage for the dashboard to
+    subscribe to (Section 14 Observability: "pipeline state visible in
+    dashboard") — implemented as SQLite row updates polled by the dashboard
+    in MVP, upgradeable to a pub/sub (Redis/websocket) in Phase 2 without
+    changing stage code.
+
+--------------------------------------------------------------------------------
+3. PLUGIN ARCHITECTURE — CONCRETE CONTRACTS
+--------------------------------------------------------------------------------
+Each PRD-listed plugin category maps to one Protocol. Below are the MVP
+implementations and the exact interface future plugins must satisfy.
+
+  ANALYZER   Protocol: analyze(project_ctx) -> NormalizedSmellReport
+             MVP: RuffAnalyzer, PylintAnalyzer, RadonAnalyzer (wrap CLI,
+             parse JSON output, map each tool's rule IDs to a shared
+             SmellCategory enum: COMPLEXITY, STYLE, DEAD_CODE, DUPLICATION,
+             SECURITY, PERFORMANCE — this shared taxonomy is what makes
+             "remove duplicates" and "summary statistics" in Module 2
+             actually meaningful across tools instead of just concatenating
+             three different report formats.
+
+  OPTIMIZER  Protocol: optimize(project_ctx, smell_report) -> OptimizedCode
+             MVP: BlackOptimizer, AutopepOptimizer, IsortOptimizer,
+             RopeOptimizer (deterministic, rule-based). Interface is
+             intentionally identical to the future LLMOptimizer so that
+             Module 3 (deterministic) and Section 12 (LLM candidates) are
+             literally the same interface — LLMOptimizer just returns
+             multiple OptimizedCode candidates instead of one
+             (List[OptimizedCode] is a superset; a deterministic optimizer
+             is just the len==1 case).
+
+  VALIDATOR  Protocol: validate(original_ctx, optimized_ctx) -> ValidationResult
+             MVP: SyntaxValidator (ast.parse), PytestValidator (run existing
+             test suite in isolated venv), StaticRerunValidator (re-run
+             Module 2 analyzers, assert smell count doesn't regress).
+             ValidationResult.passed must be True before Runner/Monitor
+             ever execute optimized code — this is the actual enforcement
+             point for "optimization failures must never modify the
+             original project" combined with Section 4's isolation.
+
+  RUNNER     Protocol: execute(project_ctx, entrypoint, runs:int) -> RunMetrics
+             MVP: LocalProcessRunner (subprocess, resource.getrusage for
+             CPU/memory, wall-clock for runtime). Future ContainerRunner
+             implements the identical Protocol, so Phase 2's "Docker
+             execution" requirement is a drop-in plugin, not a rewrite.
+
+  MONITOR    Protocol: measure(project_ctx, entrypoint) -> EnergyMetrics
+             MVP: CodeCarbonMonitor (wraps codecarbon.EmissionsTracker,
+             captures energy_kwh, co2_kg, avg_power_w, cpu_util).
+
+  LLM        Protocol: generate(project_ctx, smell_report, mode) -> List[Candidate]
+             Not implemented in MVP but the interface is defined and stubbed
+             now with a NullLLMProvider that raises NotImplementedError, so
+             Module 9's Comparison View and Module 8's schema can already
+             have an llm_candidate slot without a schema migration later.
+
+  REPORTER   Protocol: render(experiment) -> ReportArtifact
+             MVP: JSONReporter (raw), MarkdownReporter (human-readable diff
+             summary). Dashboard consumes JSONReporter output; a future
+             PDFReporter or SlackReporter is a pure addition.
+
+Plugin registration (Section 9's "Implement interface / Register plugin /
+Update configuration", made concrete):
+
+    # ease/plugins/registry.py — entry_points based, not a manual dict
+    [project.entry-points."ease.analyzers"]
+    ruff = "ease_plugins.analyzers.ruff:RuffAnalyzer"
+
+This uses Python's standard packaging entry-points mechanism so a plugin can
+literally ship as its own pip-installable package (`pip install ease-plugin-
+sonarqube`) and appear in the registry with zero core code changes — this is
+the strongest possible interpretation of "no core modifications" (Section 9)
+and directly supports Phase 4's "SaaS deployment" story where third parties
+might ship plugins.
+
+--------------------------------------------------------------------------------
+4. WORKSPACE ISOLATION & RELIABILITY
+--------------------------------------------------------------------------------
+Requirement (NFR): "Optimization failures must never modify the original
+project. Experiments execute in isolated workspaces."
+
+Design:
+  1. Project Loader (Module 1) registers a project once; its canonical
+     source lives read-only under projects/<project_id>/source (or is a
+     read-only git checkout).
+  2. Every experiment run creates a fresh workspace:
+       workspaces/<experiment_id>/
+         ├── original/      (hardlink or git worktree copy — never written to)
+         └── candidate/     (mutable copy the Optimizer stage writes into)
+  3. Stage executors receive a WorkspacePaths object; they physically cannot
+     resolve a path outside their assigned workspace (path-joining is done
+     centrally, not by plugin code) — this closes the "well-behaved plugin"
+     assumption gap: a buggy or malicious optimizer plugin cannot escape the
+     sandbox even if it tries `../../`.
+  4. MVP: local filesystem + subprocess with resource limits (timeout,
+     ulimit/resource module) and a restricted PATH.
+  5. Phase 2 upgrade path (no interface change): WorkspacePaths backed by a
+     Docker bind-mount, stage executor becomes `docker run --rm --network
+     none -v workspace:/work ...`. Same Stage Protocol, same orchestrator.
+
+--------------------------------------------------------------------------------
+5. DATA MODEL
+--------------------------------------------------------------------------------
+Core entities (SQLAlchemy models, MVP on SQLite, same models on Postgres
+later — no ORM migration needed, only a connection string change plus
+Alembic migration run):
+
+  Project
+    id, name, root_path, language, vcs_ref, created_at
+
+  Experiment                         -- IMMUTABLE once status=COMPLETED/FAILED
+    id, project_id (FK), pipeline_config (JSON snapshot of the YAML used),
+    hardware_fingerprint (JSON: cpu model, core count, os, python version),
+    status (PENDING|RUNNING|COMPLETED|FAILED),
+    created_at, completed_at
+
+  StageRun
+    id, experiment_id (FK), stage_name, plugin_name, plugin_version,
+    input_ref (blob key), output_ref (blob key), status, started_at,
+    finished_at, error (nullable), logs_ref (blob key)
+
+  SmellReport
+    id, stage_run_id (FK), category, rule_id, file_path, line, severity,
+    tool_source
+
+  Candidate                          -- 1 row per optimization branch
+    id, experiment_id (FK), strategy_name (e.g. "rope", "llm-claude-A"),
+    source_blob_ref, validation_result (JSON), run_metrics (JSON),
+    energy_metrics (JSON)
+
+  ComparisonReport
+    id, experiment_id (FK), baseline_candidate_id, candidates (JSON array
+    of candidate_ids compared), deltas (JSON: runtime_delta, energy_delta,
+    smell_delta, memory_delta)
+
+Blob storage: large artifacts (source snapshots, logs, diffs) are NOT stored
+as DB columns. They go in a content-addressed blob directory
+(artifacts/<sha256>) with the DB row storing only the ref. This keeps SQLite
+fast and makes the eventual move to S3-compatible storage (Phase 4 SaaS) a
+storage-backend swap, not a schema change.
+
+--------------------------------------------------------------------------------
+6. API SURFACE (FastAPI) — designed now, exposed from MVP day one
+--------------------------------------------------------------------------------
+The PRD lists REST API under Phase 2, but building the dashboard directly
+against the orchestrator (skipping HTTP) in MVP is a trap: it guarantees a
+rewrite. Build the API from day one; Streamlit is just its first client.
+
+  POST   /projects                        register a project
+  GET    /projects/{id}                    project detail + smell summary
+  POST   /projects/{id}/experiments        trigger a pipeline run (async)
+  GET    /experiments/{id}                 status + full result
+  GET    /experiments/{id}/stages          stage-by-stage log/status
+  GET    /experiments?project_id=&limit=   history/list
+  POST   /experiments/compare              body: [experiment_id, ...] -> ComparisonReport
+  GET    /plugins                          registry introspection (for config UI later)
+  GET    /health
+
+Experiment creation is asynchronous: POST returns 202 + experiment_id
+immediately; orchestration runs in a background worker (MVP: FastAPI
+BackgroundTasks / a simple asyncio task queue; Phase 2: Celery + Redis once
+concurrent multi-user load justifies it). This is the correct MVP choice
+because pipelines can run for minutes (benchmark + energy monitoring), and a
+synchronous HTTP request should never block on that.
+
+--------------------------------------------------------------------------------
+7. TECH STACK
+--------------------------------------------------------------------------------
+  Language / API        Python 3.11+, FastAPI, Pydantic v2, Uvicorn
+  Orchestration          Custom lightweight DAG executor (see Sec. 2) on
+                          asyncio + a ProcessPoolExecutor for CPU-bound
+                          stages. Deliberately NOT Airflow/Prefect/Dagster
+                          for MVP — those assume long-lived scheduled DAGs
+                          across many pipelines; EASE's DAGs are short-lived,
+                          per-experiment, and need tight control over
+                          sandboxing that a generic scheduler doesn't give
+                          for free. Revisit only if Phase 2 needs true
+                          distributed multi-worker scheduling.
+  Static Analysis        ruff, pylint, radon (subprocess, JSON output mode)
+  Optimization            black, autopep8, isort, rope
+  Validation               ast (stdlib), pytest (subprocess, isolated venv via uv)
+  Energy Monitoring        codecarbon
+  Plugin discovery          Python packaging entry-points (importlib.metadata)
+  Persistence                SQLAlchemy 2.0 ORM + Alembic migrations;
+                              SQLite (dev) -> PostgreSQL (prod), same models
+  Blob/artifact storage      Local filesystem, content-addressed
+                              (swap to S3/MinIO in Phase 4 behind same
+                              interface: BlobStore.put/get)
+  Background execution       FastAPI BackgroundTasks (MVP) -> Celery + Redis
+                              (Phase 2, when concurrent multi-user runs
+                              require real queuing/retries)
+  Dashboard (MVP)             Streamlit, polling GET /experiments/{id}
+  Dashboard (Phase 2)          React + TypeScript + Vite, TanStack Query,
+                              Recharts/visx for energy/CO2/runtime charts,
+                              consuming the same FastAPI backend unchanged
+  Config                       YAML (pydantic-settings for validated load,
+                              catches bad plugin names at load time instead
+                              of mid-pipeline)
+  Testing                      pytest, hypothesis (for plugin contract
+                              fuzzing — e.g. assert every Analyzer plugin
+                              produces schema-valid output on a fixed corpus)
+  Containerization (future)    Docker for Runner isolation, docker-compose
+                              for local dev stack (api + worker + postgres
+                              + redis)
+  Dependency isolation          uv or pip-tools + per-experiment venvs for
+                              running the TARGET project's own test suite
+                              (target project deps must never pollute EASE's
+                              own environment — this is easy to miss and
+                              breaks reproducibility if skipped)
+  CI                            GitHub Actions: lint, type-check (mypy),
+                              unit tests, plugin contract tests
+
+Why this stack over alternatives, briefly:
+  - FastAPI over Flask/Django: async-native (needed for concurrent stage
+    execution and long-running experiment polling), Pydantic integration
+    gives you the Stage input/output schema validation for free at the API
+    boundary too.
+  - SQLAlchemy+Alembic over raw sqlite3: PRD explicitly plans SQLite→Postgres
+    migration (Sec. 15); doing this without an ORM+migration tool means
+    hand-writing a schema migration, which is unnecessary risk for no gain.
+  - Streamlit over building React now: PRD itself lists Streamlit as
+    "rapid prototype" and React as "planned" — building the FastAPI
+    boundary correctly (Sec. 6) is what makes this swap cheap later, so
+    building React now would be premature investment relative to MVP goals.
+
+--------------------------------------------------------------------------------
+8. REPOSITORY LAYOUT
+--------------------------------------------------------------------------------
+  ease/
+  ├── pyproject.toml
+  ├── ease_core/
+  │   ├── orchestrator/          DAG resolution, stage execution, events
+  │   ├── plugins/
+  │   │   ├── base.py            Protocol/ABC definitions per category
+  │   │   └── registry.py        entry_points discovery + validation
+  │   ├── models/                Pydantic schemas (NormalizedSmellReport,
+  │   │                          OptimizedCode, ValidationResult,
+  │   │                          RunMetrics, EnergyMetrics, ComparisonReport)
+  │   ├── workspace/              copy-on-write workspace manager
+  │   ├── storage/                SQLAlchemy models, repositories, BlobStore
+  │   └── config/                 pydantic-settings pipeline.yaml loader
+  ├── ease_plugins/
+  │   ├── analyzers/{ruff,pylint,radon}.py
+  │   ├── optimizers/{black,autopep8,isort,rope}.py
+  │   ├── validators/{syntax,pytest,static_rerun}.py
+  │   ├── runners/local_process.py
+  │   ├── monitors/codecarbon.py
+  │   └── reporters/{json,markdown}.py
+  ├── ease_api/
+  │   ├── main.py                 FastAPI app
+  │   ├── routers/                projects.py, experiments.py, plugins.py
+  │   └── deps.py
+  ├── ease_dashboard/              Streamlit app (Phase 2: separate repo/app)
+  ├── migrations/                  Alembic
+  ├── tests/
+  │   ├── unit/
+  │   ├── contract/                shared test suite every plugin must pass
+  │   └── e2e/                    full pipeline run against a fixture repo
+  ├── examples/pipeline.yaml
+  └── docker-compose.dev.yml
+
+--------------------------------------------------------------------------------
+9. LOCAL SETUP (MVP)
+--------------------------------------------------------------------------------
+Prerequisites: Python 3.11+, git, (optional) Docker for future Runner work.
+
+  1. Clone and install:
+       git clone <repo-url> ease && cd ease
+       uv venv && source .venv/bin/activate
+       uv pip install -e ".[dev]"
+
+  2. Initialize the database:
+       alembic upgrade head
+
+  3. Register the built-in plugins (installed automatically via
+     entry-points from step 1's editable install — verify with):
+       ease plugins list
+
+  4. Copy and edit the example pipeline config:
+       cp examples/pipeline.yaml my_pipeline.yaml
+
+  5. Start the API:
+       uvicorn ease_api.main:app --reload --port 8000
+
+  6. Start the dashboard (separate terminal):
+       streamlit run ease_dashboard/app.py
+
+  7. Run your first experiment:
+       curl -X POST localhost:8000/projects \
+         -d '{"name":"demo","root_path":"/path/to/target/project"}'
+       curl -X POST localhost:8000/projects/{id}/experiments \
+         -d @my_pipeline.yaml
+
+  8. Watch it in the dashboard at localhost:8501, or poll:
+       curl localhost:8000/experiments/{experiment_id}
+
+Dev stack with Postgres/Redis (once Phase 2 work begins):
+       docker-compose -f docker-compose.dev.yml up -d
+       # sets DATABASE_URL, REDIS_URL env vars consumed by pydantic-settings
+
+--------------------------------------------------------------------------------
+10. TESTING STRATEGY (supports the "Reliability" and "Reproducibility" NFRs)
+--------------------------------------------------------------------------------
+  - Contract tests: one shared pytest suite run against EVERY plugin of a
+    given category (e.g. every Analyzer must, on a fixed fixture repo with
+    known smells, return a schema-valid NormalizedSmellReport and must NOT
+    write outside its workspace). New plugins can't merge without passing
+    this — this is the actual enforcement mechanism behind "no core
+    modifications" being safe.
+  - Golden experiments: a small fixture project with known smells and known
+    expected optimizer output, run end-to-end in CI to catch orchestrator
+    regressions.
+  - Isolation tests: assert that a deliberately malicious/broken plugin
+    (e.g. one that tries to `open("../original/x.py", "w")`) cannot escape
+    the workspace sandbox.
+  - Reproducibility test: run the same experiment config twice, assert
+    identical SmellReport and identical Candidate diffs (energy/runtime
+    numbers are allowed to vary within tolerance; code output must not).
+
+--------------------------------------------------------------------------------
+11. PHASED DELIVERY MAPPED TO ARCHITECTURE
+--------------------------------------------------------------------------------
+  Phase 1 (MVP)   Everything in Sections 1-10 above, single-machine,
+                  SQLite, local-process Runner, Streamlit dashboard.
+
+  Phase 2         Swap: LocalProcessRunner -> ContainerRunner (Docker),
+                  SQLite -> Postgres, add Celery+Redis worker queue,
+                  add more Analyzer plugins (SonarQube, Semgrep, ESLint —
+                  ESLint/PMD imply the language-detection in Module 1 must
+                  route to language-specific analyzer sets; the
+                  NormalizedSmellReport schema already supports this,
+                  only the registry config changes), build React dashboard
+                  against the unchanged FastAPI contract, add CI/CD hooks
+                  (a /experiments trigger callable from a GitHub Action).
+
+  Phase 3         Implement LLMOptimizer plugins (OpenAI/Claude/Ollama/
+                  DeepSeek/Qwen) against the already-defined LLM Protocol;
+                  Candidate fan-out/fan-in already supported by the DAG
+                  orchestrator from Phase 1 — no orchestrator change needed,
+                  only new plugins plus a ranking Reporter.
+
+  Phase 4         BlobStore -> S3/MinIO backend swap, multi-tenant auth on
+                  the FastAPI layer, org/team models added alongside
+                  existing Project model, fine-tuned model plugins slot into
+                  the same LLM Protocol.
+
+The core claim of this design: nothing in Phases 2-4 requires changing the
+Stage Protocol, the Experiment data model's shape, or the API contract —
+they are additive. That is the concrete, testable definition of "plugin
+architecture" and "extensibility" the PRD asks for in Sections 9 and 14.
+
+--------------------------------------------------------------------------------
+12. OPEN QUESTIONS / RECOMMENDATIONS FOR THE TEAM
+--------------------------------------------------------------------------------
+  1. Language scope: PRD's MVP tools (Ruff/Pylint/Radon/Black/Rope) are
+     Python-only, but Module 1 mentions "detect language" as if multi-
+     language is in scope now. Recommendation: MVP is Python-only; keep the
+     language field in the Project model for forward-compatibility but don't
+     build the routing logic until Phase 2 ESLint/PMD land — avoid
+     speculative complexity in Module 1.
+  2. Energy measurement noise: CodeCarbon on shared/cloud hardware is noisy.
+     Recommendation: require Module 5 "multiple executions + statistical
+     averaging" (listed as "Future" in PRD) to actually be pulled into MVP
+     scope, or before/after energy comparisons will not be trustworthy
+     enough to be useful even for the demo. This is a scope-risk flag worth
+     raising with stakeholders before Phase 1 sign-off.
+  3. Validation depth: MVP "syntax + optional tests" is good, but silently
+     shipping an optimized candidate whose test suite doesn't exist should
+     be surfaced clearly in the dashboard (Section 8/Experiment View) as
+     "unvalidated," not hidden — otherwise energy/runtime gains could be
+     reported for behaviorally broken code.
+
+================================================================================
+END OF DOCUMENT
+================================================================================

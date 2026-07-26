@@ -1,0 +1,128 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ease"
+version = "0.1.0"
+description = "Energy-Aware Software Engineering Platform — Analyze, Optimize, Validate, and Benchmark software energy efficiency."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "EASE Team"},
+]
+
+dependencies = [
+    # API & Server
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+
+    # Persistence
+    "sqlalchemy>=2.0.25",
+    "alembic>=1.13.0",
+    "aiosqlite>=0.19.0",
+
+    # Dashboard
+    "streamlit>=1.31.0",
+
+    # Energy monitoring
+    "codecarbon>=2.3.0",
+
+    # Linting / Analysis (used as libraries where possible)
+    "ruff>=0.2.0",
+    "pylint>=3.0.0",
+    "radon>=5.1.0",
+
+    # Optimization tools
+    "black>=24.0.0",
+    "autopep8>=2.0.0",
+    "isort>=5.13.0",
+    "rope>=1.12.0",
+
+    # YAML pipeline config
+    "pyyaml>=6.0",
+
+    # HTTP client (dashboard → API)
+    "httpx>=0.26.0",
+
+    # Plugin discovery (stdlib in 3.11+, but explicit)
+    "importlib-metadata>=6.0; python_version<'3.12'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "hypothesis>=6.90.0",
+    "mypy>=1.8.0",
+    "factory-boy>=3.3.0",
+    "pre-commit>=3.5.0",
+]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "hypothesis>=6.90.0",
+]
+
+[project.entry-points."ease.analyzers"]
+ruff = "ease_plugins.analyzers.ruff:RuffAnalyzer"
+pylint = "ease_plugins.analyzers.pylint:PylintAnalyzer"
+radon = "ease_plugins.analyzers.radon:RadonAnalyzer"
+
+[project.entry-points."ease.optimizers"]
+black = "ease_plugins.optimizers.black:BlackOptimizer"
+autopep8 = "ease_plugins.optimizers.autopep8:AutopepOptimizer"
+isort = "ease_plugins.optimizers.isort:IsortOptimizer"
+rope = "ease_plugins.optimizers.rope:RopeOptimizer"
+
+[project.entry-points."ease.validators"]
+syntax = "ease_plugins.validators.syntax:SyntaxValidator"
+pytest_validator = "ease_plugins.validators.pytest:PytestValidator"
+static_rerun = "ease_plugins.validators.static_rerun:StaticRerunValidator"
+
+[project.entry-points."ease.runners"]
+local_process = "ease_plugins.runners.local_process:LocalProcessRunner"
+
+[project.entry-points."ease.monitors"]
+codecarbon = "ease_plugins.monitors.codecarbon:CodeCarbonMonitor"
+
+[project.entry-points."ease.reporters"]
+json = "ease_plugins.reporters.json:JSONReporter"
+markdown = "ease_plugins.reporters.markdown:MarkdownReporter"
+
+[project.entry-points."ease.llm"]
+null = "ease_plugins.llm.null:NullLLMProvider"
+
+[tool.setuptools.packages.find]
+include = ["ease*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP", "ANN", "ARG", "B", "C4", "ISC", "PGH", "PIE", "PL", "PT", "RET", "RUF", "SIM", "SLF", "TCH", "TID", "TRY", "YTT"]
+ignore = ["ANN101", "ANN102"]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*" = ["ANN", "D"]
+
+[tool.coverage.run]
+source = ["ease_core", "ease_plugins", "ease_api"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "def __repr__", "raise NotImplementedError"]

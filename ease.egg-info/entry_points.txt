@@ -1,0 +1,28 @@
+[ease.analyzers]
+pylint = ease_plugins.analyzers.pylint:PylintAnalyzer
+radon = ease_plugins.analyzers.radon:RadonAnalyzer
+ruff = ease_plugins.analyzers.ruff:RuffAnalyzer
+
+[ease.llm]
+null = ease_plugins.llm.null:NullLLMProvider
+
+[ease.monitors]
+codecarbon = ease_plugins.monitors.codecarbon:CodeCarbonMonitor
+
+[ease.optimizers]
+autopep8 = ease_plugins.optimizers.autopep8:AutopepOptimizer
+black = ease_plugins.optimizers.black:BlackOptimizer
+isort = ease_plugins.optimizers.isort:IsortOptimizer
+rope = ease_plugins.optimizers.rope:RopeOptimizer
+
+[ease.reporters]
+json = ease_plugins.reporters.json:JSONReporter
+markdown = ease_plugins.reporters.markdown:MarkdownReporter
+
+[ease.runners]
+local_process = ease_plugins.runners.local_process:LocalProcessRunner
+
+[ease.validators]
+pytest_validator = ease_plugins.validators.pytest:PytestValidator
+static_rerun = ease_plugins.validators.static_rerun:StaticRerunValidator
+syntax = ease_plugins.validators.syntax:SyntaxValidator
