@@ -1,6 +1,7 @@
 """EASE API — FastAPI application entry point.
 
 Run with:
+
     uvicorn ease_api.main:app --reload --port 8000
 """
 
@@ -13,11 +14,13 @@ from ease_api.deps import get_db
 from ease_api.routers import experiments, plugins, projects
 from ease_core.models import HealthResponse
 
+
 app = FastAPI(
     title="EASE — Energy-Aware Software Engineering Platform",
     version="0.1.0",
     description="Analyze, optimize, validate, and benchmark software energy efficiency.",
 )
+
 
 # ------------------------------------------------------------------
 # Middleware
@@ -30,6 +33,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ------------------------------------------------------------------
 # Routers
@@ -55,6 +59,13 @@ async def startup() -> None:
 # Health
 # ------------------------------------------------------------------
 
-@app.get("/health", response_model=HealthResponse, tags=["health"])
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["health"],
+)
 def health() -> HealthResponse:
-    return HealthResponse(status="ok", version="0.1.0")
+    return HealthResponse(
+        status="ok",
+        version="0.1.0",
+    )
