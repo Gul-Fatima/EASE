@@ -20,7 +20,7 @@ class AppSettings(BaseSettings):
     MVP uses SQLite; set DATABASE_URL to a Postgres connection string for Phase 2.
     """
 
-    database_url: str = Field(default="sqlite+aiosqlite:///./ease.db", alias="DATABASE_URL")
+    database_url: str = Field(default="sqlite:///./ease.db", alias="DATABASE_URL")
     artifacts_dir: str = Field(default="artifacts", alias="ARTIFACTS_DIR")
     workspaces_dir: str = Field(default="workspaces", alias="WORKSPACES_DIR")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
