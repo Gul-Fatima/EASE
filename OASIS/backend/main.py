@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -5,6 +7,7 @@ from pydantic import BaseModel
 from modules.energy_estimation.project import Project
 from modules.energy_estimation.executor import ProjectExecutor
 from modules.energy_estimation.estimator import EnergyEstimator
+from modules.code_understanding.parser import parse_code
 
 
 # ============================================================
@@ -47,6 +50,13 @@ class EnergyRequest(BaseModel):
     command: str
 
     timeout: int = 300
+
+
+class CodeAnalysisRequest(BaseModel):
+
+    file_path: str
+
+    language: str = "python"
 
 
 # ============================================================
@@ -222,5 +232,119 @@ def estimate_energy(
             status_code=500,
 
             detail=str(e)
+        )
 
+
+# ============================================================
+# CODE UNDERSTANDING
+# ============================================================
+
+@app.post("/api/code/analyze")
+def analyze_code(
+    request: CodeAnalysisRequest
+):
+
+    try:
+
+        print()
+        print("=" * 70)
+        print("           CODE UNDERSTANDING REQUEST")
+        print("=" * 70)
+
+        print(
+            f"File Path  : {request.file_path}"
+        )
+
+        print(
+            f"Language   : {request.language}"
+        )
+
+
+        # ----------------------------------------------------
+        # 1. READ FILE
+        # ----------------------------------------------------
+
+        file_path = Path(
+            request.file_path
+        )
+
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"File not found: {request.file_path}"
+            )
+
+        source = file_path.read_text(
+            encoding="utf-8"
+        )
+
+
+        # ----------------------------------------------------
+        # 2. PARSE CODE
+        # ----------------------------------------------------
+
+        state = parse_code(
+            source,
+            path=str(file_path),
+            language=request.language
+        )
+
+
+        # ----------------------------------------------------
+        # 3. RETURN STRUCTURED RESULT
+        # ----------------------------------------------------
+
+        result = state.to_dict()
+
+        result["file_size"] = len(
+            source.encode("utf-8")
+        )
+
+        result["line_count"] = len(
+            source.splitlines()
+        )
+
+        print()
+        print(
+            f"Parsed: {len(state.functions)} functions, "
+            f"{len(state.classes)} classes, "
+            f"{len(state.loops)} loops"
+        )
+
+        print("=" * 70)
+
+
+        return result
+
+
+    except FileNotFoundError as e:
+
+        raise HTTPException(
+
+            status_code=404,
+
+            detail=str(e)
+        )
+
+    except ValueError as e:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail=str(e)
+        )
+
+    except Exception as e:
+
+        print()
+        print(
+            "OASIS BACKEND ERROR:",
+            str(e)
+        )
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
         )
