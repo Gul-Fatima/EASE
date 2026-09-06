@@ -3,3 +3,5 @@
 ease.db
 artifacts
 workspaces
+node_modules
+.env.local
