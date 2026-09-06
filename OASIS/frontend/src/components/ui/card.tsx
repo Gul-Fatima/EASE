@@ -1,102 +1,60 @@
-import * as React from "react"
-import { cn } from "cn"
+"use client";
 
-function Card({
-  className,
-  size = "default",
-  ...props
-}: React.ComponentProps<"div"> & { size?: "default" | "sm" }) {
+import React from 'react';
+
+interface CardProps {
+  children: React.ReactNode;
+  className?: string;
+  as?: 'div' | 'section' | 'article';
+}
+
+export function Card({ children, className = '', as = 'section' }: CardProps) {
+  const Tag = as;
   return (
-    <div
-      data-slot="card"
-      data-size={size}
-      className={cn(
-        "group/card flex flex-col gap-(--card-spacing) overflow-hidden rounded-xl bg-card py-(--card-spacing) text-sm text-card-foreground ring-1 ring-foreground/10 [--card-spacing:--spacing(4)] has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:[--card-spacing:--spacing(3)] data-[size=sm]:has-data-[slot=card-footer]:pb-0 *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
-        className
+    <Tag className={`rounded-card border border-line bg-surface shadow-card ${className}`}>
+      {children}
+    </Tag>);
+
+}
+
+interface CardHeaderProps {
+  title: string;
+  hint?: string;
+  actions?: React.ReactNode;
+  level?: 2 | 3;
+}
+
+export function CardHeader({ title, hint, actions, level = 2 }: CardHeaderProps) {
+  const Heading = level === 2 ? 'h2' : 'h3';
+  return (
+    <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-3.5">
+      <div className="min-w-0">
+        <Heading className="text-[13px] font-semibold tracking-tight text-ink">{title}</Heading>
+        {hint ? <p className="mt-0.5 text-xs text-ink-3">{hint}</p> : null}
+      </div>
+      {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+    </div>);
+
+}
+
+export function DefinitionList({
+  items,
+  columns = 1
+
+
+
+}: {items: {label: string;value: React.ReactNode;}[];columns?: 1 | 2;}) {
+  return (
+    <dl className={columns === 2 ? 'grid grid-cols-2 gap-x-6' : 'block'}>
+      {items.map((item) =>
+      <div
+        key={item.label}
+        className="flex items-baseline justify-between gap-4 border-b border-line/70 py-2 last:border-0">
+        
+          <dt className="text-xs text-ink-3">{item.label}</dt>
+          <dd className="font-mono text-xs font-medium text-ink-2 tabular">{item.value}</dd>
+        </div>
       )}
-      {...props}
-    />
-  )
-}
+    </dl>);
 
-function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="card-header"
-      className={cn(
-        "group/card-header @container/card-header grid auto-rows-min items-start gap-1 rounded-t-xl px-(--card-spacing) has-data-[slot=card-action]:grid-cols-[1fr_auto] has-data-[slot=card-description]:grid-rows-[auto_auto] [.border-b]:pb-(--card-spacing)",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
-function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="card-title"
-      className={cn(
-        "font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
-function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="card-description"
-      className={cn("text-sm text-muted-foreground", className)}
-      {...props}
-    />
-  )
-}
-
-function CardAction({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="card-action"
-      className={cn(
-        "col-start-2 row-span-2 row-start-1 self-start justify-self-end",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
-function CardContent({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="card-content"
-      className={cn("px-(--card-spacing)", className)}
-      {...props}
-    />
-  )
-}
-
-function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="card-footer"
-      className={cn(
-        "flex items-center rounded-b-xl border-t bg-muted/50 p-(--card-spacing)",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
-export {
-  Card,
-  CardHeader,
-  CardFooter,
-  CardTitle,
-  CardAction,
-  CardDescription,
-  CardContent,
 }
