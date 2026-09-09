@@ -356,6 +356,140 @@ function setText(id, value) {
    RUN OASIS ANALYSIS
 ============================================================ */
 
+async function runFiniteAnalysis(payload, status) {
+
+    const response = await fetch(
+        "http://127.0.0.1:8000/api/energy/estimate",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(
+            `Server returned ${response.status}`
+        );
+    }
+
+    const result = await response.json();
+    updateDashboard(result);
+    status.textContent =
+        "Analysis completed successfully.";
+}
+
+
+async function runContinuousAnalysis(payload, status) {
+
+    const response = await fetch(
+        "http://127.0.0.1:8000/api/energy/estimate/stream",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Accept: "text/event-stream",
+            },
+            body: JSON.stringify({
+                ...payload,
+                continuous: true,
+                interval_seconds: 10,
+            }),
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(
+            `Server returned ${response.status}`
+        );
+    }
+
+    if (!response.body) {
+        throw new Error(
+            "Streaming response body is unavailable."
+        );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let lastSnapshot = null;
+
+    status.textContent =
+        "Continuous mode: measuring every 10s...";
+
+    while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+            break;
+        }
+
+        buffer += decoder.decode(
+            value,
+            { stream: true }
+        );
+
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+
+        for (const chunk of chunks) {
+            const line = chunk
+                .split("\n")
+                .find((entry) =>
+                    entry.startsWith("data:")
+                );
+
+            if (!line) {
+                continue;
+            }
+
+            const jsonText = line
+                .slice(5)
+                .trim();
+
+            if (!jsonText) {
+                continue;
+            }
+
+            const snapshot = JSON.parse(jsonText);
+
+            if (snapshot.error) {
+                throw new Error(snapshot.error);
+            }
+
+            lastSnapshot = snapshot;
+            updateDashboard(snapshot);
+
+            const index =
+                snapshot.snapshot_index || "?";
+            const energy = Number(
+                snapshot.energy_consumed || 0
+            ).toFixed(9);
+
+            if (snapshot.final) {
+                status.textContent =
+                    `Continuous analysis complete. `
+                    + `Final energy: ${energy} kWh`;
+            } else {
+                status.textContent =
+                    `Live snapshot #${index} `
+                    + `(every 10s) — `
+                    + `${energy} kWh`;
+            }
+        }
+    }
+
+    if (!lastSnapshot) {
+        throw new Error(
+            "No energy snapshots were received."
+        );
+    }
+}
+
+
 async function runAnalysis() {
 
     const projectPath =
@@ -377,26 +511,23 @@ async function runAnalysis() {
                 .value
         );
 
+    const continuous =
+        document
+            .getElementById("continuousMode")
+            .checked;
+
 
     /*
      * VALIDATION
      */
 
     if (!projectPath) {
-
-        alert(
-            "Please enter the project path."
-        );
-
+        alert("Please enter the project path.");
         return;
     }
 
     if (!executionCommand) {
-
-        alert(
-            "Please enter the execution command."
-        );
-
+        alert("Please enter the execution command.");
         return;
     }
 
@@ -406,103 +537,50 @@ async function runAnalysis() {
      */
 
     const button =
-        document.getElementById(
-            "runAnalysis"
-        );
+        document.getElementById("runAnalysis");
 
     const status =
-        document.getElementById(
-            "analysisStatus"
-        );
+        document.getElementById("analysisStatus");
 
     button.disabled = true;
+    button.innerHTML = "⏳ Running analysis...";
 
-    button.innerHTML =
-        "⏳ Running analysis...";
+    status.textContent = continuous
+        ? "Starting continuous energy monitoring..."
+        : "Executing project and measuring energy...";
 
-    status.textContent =
-        "Executing project and measuring energy...";
-
+    const payload = {
+        project_path: projectPath,
+        command: executionCommand,
+        timeout: timeout,
+        continuous: continuous,
+        interval_seconds: 10,
+    };
 
     try {
-
-        /*
-         * OASIS BACKEND API
-         *
-         * Your Python backend should expose:
-         *
-         * POST /api/energy/estimate
-         */
-
-        const response =
-            await fetch(
-                "http://127.0.0.1:8000/api/energy/estimate",
-                {
-                    method: "POST",
-
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body: JSON.stringify({
-
-                        project_path:
-                            projectPath,
-
-                        command:
-                            executionCommand,
-
-                        timeout:
-                            timeout
-
-                    })
-                }
+        if (continuous) {
+            await runContinuousAnalysis(
+                payload,
+                status
             );
-
-
-        if (!response.ok) {
-
-            throw new Error(
-                `Server returned ${response.status}`
+        } else {
+            await runFiniteAnalysis(
+                payload,
+                status
             );
         }
-
-
-        const result =
-            await response.json();
-
-
-        /*
-         * UPDATE DASHBOARD
-         */
-
-        updateDashboard(result);
-
-
-        status.textContent =
-            "Analysis completed successfully.";
-
-    }
-
-    catch (error) {
-
+    } catch (error) {
         console.error(error);
 
-        status.textContent =
-            "Analysis failed.";
+        status.textContent = "Analysis failed.";
 
         alert(
-            "Could not connect to the OASIS backend.\n\n" +
-            "Make sure your Python backend is running."
+            "Could not complete energy analysis.\n\n"
+            + (error.message || "")
+            + "\n\nMake sure your Python backend is running."
         );
-
-    }
-
-    finally {
-
+    } finally {
         button.disabled = false;
-
         button.innerHTML =
             "⚡ Run Energy Analysis";
     }
