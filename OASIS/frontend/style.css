@@ -418,6 +418,22 @@ nav a span {
     font-size: 10px;
 }
 
+.checkbox-label {
+    display: flex !important;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--green);
+    cursor: pointer;
+}
+
 .analysis-actions {
     margin-top: 23px;
 

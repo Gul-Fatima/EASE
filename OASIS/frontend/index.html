@@ -201,6 +201,31 @@
 
                     </div>
 
+                    <small>
+                        For continuous mode, this is how long to monitor the running process.
+                    </small>
+
+                </div>
+
+
+                <!-- CONTINUOUS MODE -->
+
+                <div class="form-group full">
+
+                    <label class="checkbox-label" for="continuousMode">
+                        <input
+                            id="continuousMode"
+                            type="checkbox"
+                        >
+                        Continuous mode (PHP / servers)
+                    </label>
+
+                    <small>
+                        Enable for infinite processes like
+                        <code>php -S localhost:8000</code>.
+                        Energy metrics flush every 10 seconds while the process runs.
+                    </small>
+
                 </div>
 
             </div>
